@@ -12,6 +12,8 @@
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 
+#pragma clang diagnostic ignored "-Wunused-value"
+
 struct nm_desc *nm_desc;
 uint16_t new_mss4;
 uint16_t new_mss6;
@@ -19,6 +21,13 @@ uint64_t pctr = 0;
 uint64_t rctr = 0;
 
 #define DEBUG (0)
+
+#if DEBUG
+#define D_LOG(...)	printf("%s(%d) %s:", __FILE__, __LINE__, __func__), printf(__VA_ARGS__)
+#else
+#define D_LOG	;
+#endif
+
 
 static int
 rewrite_tcpmss(char *tcp, uint16_t *new_mss)
@@ -28,10 +37,8 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 	uint16_t chksum = ntohs((uint16_t)tcphdr->th_sum);
 	uint16_t hdrlen = (uint16_t)tcphdr->th_off * 4;
 	uint16_t h_new_mss = ntohs(*new_mss);
-#if DEBUG
-	printf("chksum: %x\n", chksum);
-	printf("tcp hdr len: %d\n", hdrlen);
-#endif
+	D_LOG("chksum: %x\n", chksum);
+	D_LOG("tcp hdr len: %d\n", hdrlen);
 
 	char *tcpopt;
 	tcpopt = tcp + 20;
@@ -44,17 +51,13 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 			uint16_t old_mss;
 			memcpy(&old_mss, (tcpopt + 2), 2);
 			uint16_t h_old_mss = ntohs(old_mss);
-#if DEBUG
-			printf("old mss: %d\n", h_old_mss);
-#endif
+			D_LOG("old mss: %d\n", h_old_mss);
 
 			if(h_old_mss <= h_new_mss)
 				return 0;
 
 			memcpy(tcpopt + 2, new_mss, 2);
-#if DEBUG
-			printf("new mss: %d\n", ntohs((uint16_t)*(tcpopt + 2)));
-#endif
+			D_LOG("new mss: %d\n", ntohs((uint16_t)*(tcpopt + 2)));
 
 			uint32_t sum;
 			sum = ~chksum - h_old_mss;
@@ -62,9 +65,7 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 			sum += h_new_mss;
 			sum = (sum & 0xFFFF) + (sum >> 16);
 			sum = (uint16_t)~sum;
-#if DEBUG
-			printf("newcsum: %x\n", sum);
-#endif
+			D_LOG("newcsum: %x\n", sum);
 
 			uint16_t thsum = htons(sum);
 			memcpy(&tcphdr->th_sum, &thsum, 2);
@@ -74,21 +75,15 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 		}
 		else if(*tcpopt == TCPOPT_NOP)
 		{
-#if DEBUG
-			printf("nop\n");
-#endif
+			D_LOG("nop\n");
 			tcpopt += TCPOLEN_NOP;
 		}
 		else
 		{
-#if DEBUG
-			printf("unknown option\n");
-#endif
+			D_LOG("unknown option\n");
 			tcpopt += *(tcpopt + 1);
 		}
-#if DEBUG
-		printf("offset: %ld\n", tcpopt - tcp);
-#endif
+		D_LOG("offset: %ld\n", tcpopt - tcp);
 	}
 	return 0;
 }
@@ -109,14 +104,10 @@ check_packet(int dir, void *buf, unsigned int len)
 		if (ip->ip_v == IPVERSION &&
 		 ip->ip_p == IPPROTO_TCP &&
 		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
-#if DEBUG
-			printf("v4 tcp syn\n");
-#endif
+			D_LOG("v4 tcp syn\n");
 			if(rewrite_tcpmss(payload, &new_mss4))
 			{
-#if DEBUG
-				printf("mss updated!\n");
-#endif
+				D_LOG("mss updated!\n");
 
 				return 1;
 			}
@@ -128,14 +119,10 @@ check_packet(int dir, void *buf, unsigned int len)
 		if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
 		 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
 		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
-#if DEBUG
-			printf("v6 tcp syn\n");
-#endif
+			D_LOG("v6 tcp syn\n");
 			if(rewrite_tcpmss(payload, &new_mss6))
 			{
-#if DEBUG
-				printf("mss updated!\n");
-#endif
+				D_LOG("mss updated!\n");
 
 				return 1;
 			}
@@ -223,8 +210,8 @@ main(int argc, char *argv[])
 			cur = rxring->cur;
 			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
 				pctr++;
+				D_LOG("\n# new packet!\n");
 #if DEBUG
-				printf("\n# new packet!\n");
 				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
 #endif
 
