@@ -1,6 +1,7 @@
 #include <sys/param.h>
 #include <unistd.h>
 #include <poll.h>
+#include <signal.h>
 #include <net/ethernet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -14,6 +15,8 @@
 struct nm_desc *nm_desc;
 uint16_t new_mss4;
 uint16_t new_mss6;
+uint64_t pctr = 0;
+uint64_t rctr = 0;
 
 #define DEBUG (0)
 
@@ -24,6 +27,7 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 	tcphdr = (struct tcphdr *)tcp;
 	uint16_t chksum = ntohs((uint16_t)tcphdr->th_sum);
 	uint16_t hdrlen = (uint16_t)tcphdr->th_off * 4;
+	uint16_t h_new_mss = ntohs(*new_mss);
 #if DEBUG
 	printf("chksum: %x\n", chksum);
 	printf("tcp hdr len: %d\n", hdrlen);
@@ -39,11 +43,12 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 
 			uint16_t old_mss;
 			memcpy(&old_mss, (tcpopt + 2), 2);
+			uint16_t h_old_mss = ntohs(old_mss);
 #if DEBUG
-			printf("old mss: %d\n", ntohs(old_mss));
+			printf("old mss: %d\n", h_old_mss);
 #endif
 
-			if(ntohs(old_mss) <= ntohs(*new_mss))
+			if(h_old_mss <= h_new_mss)
 				return 0;
 
 			memcpy(tcpopt + 2, new_mss, 2);
@@ -52,9 +57,9 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 #endif
 
 			uint32_t sum;
-			sum = ~chksum - ntohs(old_mss);
+			sum = ~chksum - h_old_mss;
 			sum = (sum & 0xFFFF) + (sum >> 16);
-			sum += ntohs(*new_mss);
+			sum += h_new_mss;
 			sum = (sum & 0xFFFF) + (sum >> 16);
 			sum = (uint16_t)~sum;
 #if DEBUG
@@ -64,6 +69,7 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 			uint16_t thsum = htons(sum);
 			memcpy(&tcphdr->th_sum, &thsum, 2);
 
+			rctr++;
 			return 1;
 		}
 		else if(*tcpopt == TCPOPT_NOP)
@@ -72,7 +78,9 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 			printf("nop\n");
 #endif
 			tcpopt += TCPOLEN_NOP;
-		}else{
+		}
+		else
+		{
 #if DEBUG
 			printf("unknown option\n");
 #endif
@@ -178,12 +186,21 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 	}
 }
 
+void
+int_handler(int sig)
+{
+	printf("%lu packets received. %lu packets rewritten. exit.\n", pctr, rctr);
+	exit(0);
+}
+
 int
 main(int argc, char *argv[])
 {
 	unsigned int cur, n, i, is_hostring;
 	struct netmap_ring *rxring;
 	struct pollfd pollfd[1];
+
+	signal(SIGINT, int_handler);
 
 	new_mss4 = htons((uint16_t)1280);
 	new_mss6 = htons((uint16_t)1240);
@@ -205,7 +222,7 @@ main(int argc, char *argv[])
 			rxring = NETMAP_RXRING(nm_desc->nifp, i);
 			cur = rxring->cur;
 			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
-
+				pctr++;
 #if DEBUG
 				printf("\n# new packet!\n");
 				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
