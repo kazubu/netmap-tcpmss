@@ -13,7 +13,61 @@
 #include <net/netmap_user.h>
 
 struct nm_desc *nm_desc;
+uint16_t new_mss;
 
+
+static int
+rewrite_tcpmss(char *tcp)
+{
+
+	struct tcphdr* tcphdr;
+	tcphdr = (struct tcphdr *)tcp;
+	uint16_t chksum = ntohs((uint16_t)tcphdr->th_sum);
+	uint16_t hdrlen = (uint16_t)tcphdr->th_off * 4;
+	printf("chksum: %x\n", chksum);
+
+	printf("tcp hdr len: %d\n", hdrlen);
+
+	char *tcpopt;
+	tcpopt = tcp + 20;
+	while(*tcpopt != 0 && tcpopt - tcp < hdrlen ){
+		if(*tcpopt == TCPOPT_MAXSEG)
+		{
+			if(*(tcpopt+1) != 4)
+				return 0;
+
+			uint16_t oldmss;
+			memcpy(&oldmss, (tcpopt + 2), 2);
+			printf("old mss: %d\n", ntohs(oldmss));
+
+			memcpy(tcpopt + 2, &new_mss, 2);
+			printf("new mss: %d\n", ntohs((uint16_t)*(tcpopt + 2)));
+
+			uint32_t sum;
+			sum = ~chksum - ntohs(oldmss);
+			sum = (sum & 0xFFFF) + (sum >> 16);
+			sum += ntohs(new_mss);
+			sum = (sum & 0xFFFF) + (sum >> 16);
+			sum = (uint16_t)~sum;
+			printf("newcsum: %x\n", sum);
+
+			uint16_t thsum = htons(sum);
+			memcpy(&tcphdr->th_sum, &thsum, 2);
+
+			return 1;
+		}
+		else if(*tcpopt == TCPOPT_NOP)
+		{
+			printf("nop\n");
+			tcpopt += TCPOLEN_NOP;
+		}else{
+			printf("unknown option\n");
+			tcpopt += *(tcpopt + 1);
+		}
+		printf("offset: %ld\n", tcpopt - tcp);
+	}
+	return 0;
+}
 
 static int
 check_packet(int dir, void *buf, unsigned int len)
@@ -25,19 +79,30 @@ check_packet(int dir, void *buf, unsigned int len)
 	uint16_t ether_type = ntohs((uint16_t)ether->ether_type);
 
 	if (ether_type == ETHERTYPE_IP) {
-
 		struct ip *ip;
 		ip = (struct ip *)(ether + 1);
 		payload = (char *)ip + ip->ip_hl * 4;
-		if (ip->ip_v == IPVERSION && ip->ip_p == IPPROTO_TCP && ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
+		if (ip->ip_v == IPVERSION &&
+		 ip->ip_p == IPPROTO_TCP &&
+		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
 			printf("v4 tcp syn\n");
+			if(rewrite_tcpmss(payload))
+			{
+				printf("mss updated!\n");
+			}
 		}
 	} else if (ether_type == ETHERTYPE_IPV6) {
 		struct ip6_hdr *ip6;
 		ip6 = (struct ip6_hdr *)(ether + 1);
 		payload = (char *)ip6 + 40;
-		if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION && ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP && ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
+		if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
+		 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
+		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
 			printf("v6 tcp syn\n");
+			if(rewrite_tcpmss(payload))
+			{
+				printf("mss updated!\n");
+			}
 		}
 	}
 
@@ -92,6 +157,8 @@ main(int argc, char *argv[])
 	struct netmap_ring *rxring;
 	struct pollfd pollfd[1];
 
+	new_mss = htons((uint16_t)1280);
+
 #define NM_IFNAME	"netmap:em2*"
 	nm_desc = nm_open(NM_IFNAME, NULL, 0, NULL);
 
@@ -108,6 +175,8 @@ main(int argc, char *argv[])
 			cur = rxring->cur;
 			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
 
+				printf("\n# new packet!\n");
+				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
 				check_packet(is_hostring, NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len);
 				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
 
