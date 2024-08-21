@@ -6,27 +6,28 @@
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <netinet/tcp.h>
-#include <netinet/udp.h>
 #include <libutil.h>
 #include <sys/sbuf.h>
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 
 struct nm_desc *nm_desc;
-uint16_t new_mss;
+uint16_t new_mss4;
+uint16_t new_mss6;
 
+#define DEBUG (0)
 
 static int
-rewrite_tcpmss(char *tcp)
+rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 {
-
 	struct tcphdr* tcphdr;
 	tcphdr = (struct tcphdr *)tcp;
 	uint16_t chksum = ntohs((uint16_t)tcphdr->th_sum);
 	uint16_t hdrlen = (uint16_t)tcphdr->th_off * 4;
+#if DEBUG
 	printf("chksum: %x\n", chksum);
-
 	printf("tcp hdr len: %d\n", hdrlen);
+#endif
 
 	char *tcpopt;
 	tcpopt = tcp + 20;
@@ -36,20 +37,29 @@ rewrite_tcpmss(char *tcp)
 			if(*(tcpopt+1) != 4)
 				return 0;
 
-			uint16_t oldmss;
-			memcpy(&oldmss, (tcpopt + 2), 2);
-			printf("old mss: %d\n", ntohs(oldmss));
+			uint16_t old_mss;
+			memcpy(&old_mss, (tcpopt + 2), 2);
+#if DEBUG
+			printf("old mss: %d\n", ntohs(old_mss));
+#endif
 
-			memcpy(tcpopt + 2, &new_mss, 2);
+			if(ntohs(old_mss) <= ntohs(*new_mss))
+				return 0;
+
+			memcpy(tcpopt + 2, new_mss, 2);
+#if DEBUG
 			printf("new mss: %d\n", ntohs((uint16_t)*(tcpopt + 2)));
+#endif
 
 			uint32_t sum;
-			sum = ~chksum - ntohs(oldmss);
+			sum = ~chksum - ntohs(old_mss);
 			sum = (sum & 0xFFFF) + (sum >> 16);
-			sum += ntohs(new_mss);
+			sum += ntohs(*new_mss);
 			sum = (sum & 0xFFFF) + (sum >> 16);
 			sum = (uint16_t)~sum;
+#if DEBUG
 			printf("newcsum: %x\n", sum);
+#endif
 
 			uint16_t thsum = htons(sum);
 			memcpy(&tcphdr->th_sum, &thsum, 2);
@@ -58,13 +68,19 @@ rewrite_tcpmss(char *tcp)
 		}
 		else if(*tcpopt == TCPOPT_NOP)
 		{
+#if DEBUG
 			printf("nop\n");
+#endif
 			tcpopt += TCPOLEN_NOP;
 		}else{
+#if DEBUG
 			printf("unknown option\n");
+#endif
 			tcpopt += *(tcpopt + 1);
 		}
+#if DEBUG
 		printf("offset: %ld\n", tcpopt - tcp);
+#endif
 	}
 	return 0;
 }
@@ -85,10 +101,16 @@ check_packet(int dir, void *buf, unsigned int len)
 		if (ip->ip_v == IPVERSION &&
 		 ip->ip_p == IPPROTO_TCP &&
 		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
+#if DEBUG
 			printf("v4 tcp syn\n");
-			if(rewrite_tcpmss(payload))
+#endif
+			if(rewrite_tcpmss(payload, &new_mss4))
 			{
+#if DEBUG
 				printf("mss updated!\n");
+#endif
+
+				return 1;
 			}
 		}
 	} else if (ether_type == ETHERTYPE_IPV6) {
@@ -98,10 +120,16 @@ check_packet(int dir, void *buf, unsigned int len)
 		if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
 		 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
 		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
+#if DEBUG
 			printf("v6 tcp syn\n");
-			if(rewrite_tcpmss(payload))
+#endif
+			if(rewrite_tcpmss(payload, &new_mss6))
 			{
+#if DEBUG
 				printf("mss updated!\n");
+#endif
+
+				return 1;
 			}
 		}
 	}
@@ -157,10 +185,13 @@ main(int argc, char *argv[])
 	struct netmap_ring *rxring;
 	struct pollfd pollfd[1];
 
-	new_mss = htons((uint16_t)1280);
+	new_mss4 = htons((uint16_t)1280);
+	new_mss6 = htons((uint16_t)1240);
 
 #define NM_IFNAME	"netmap:em2*"
 	nm_desc = nm_open(NM_IFNAME, NULL, 0, NULL);
+
+	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", NM_IFNAME, ntohs(new_mss4), ntohs(new_mss6));
 
 	for (;;) {
 		pollfd[0].fd = nm_desc->fd;
@@ -175,10 +206,16 @@ main(int argc, char *argv[])
 			cur = rxring->cur;
 			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
 
+#if DEBUG
 				printf("\n# new packet!\n");
 				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
+#endif
+
 				check_packet(is_hostring, NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len);
+
+#if DEBUG
 				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
+#endif
 
 				swapto(!is_hostring, &rxring->slot[cur]);
 			}
