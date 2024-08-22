@@ -41,46 +41,44 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 	tcpopt = tcp + 20;
 	while(*tcpopt != 0 && tcpopt - tcp < hdrlen )
 	{
-		if(*tcpopt == TCPOPT_MAXSEG)
+		switch(*tcpopt)
 		{
-			D_LOG("offset: %lu, option: MSS\n", tcpopt - tcp);
-			if(*(tcpopt+1) != 4)
-				return 0;
+			case TCPOPT_MAXSEG:
+				D_LOG("offset: %lu, option: MSS\n", tcpopt - tcp);
+				if(*(tcpopt+1) != 4)
+					return 0;
 
-			uint16_t old_mss;
-			memcpy(&old_mss, (tcpopt + 2), 2);
-			uint16_t h_old_mss = ntohs(old_mss);
-			D_LOG("old mss: %u\n", h_old_mss);
+				uint16_t old_mss;
+				memcpy(&old_mss, (tcpopt + 2), 2);
+				uint16_t h_old_mss = ntohs(old_mss);
+				D_LOG("old mss: %u\n", h_old_mss);
 
-			if(h_old_mss <= h_new_mss)
-				return 0;
+				if(h_old_mss <= h_new_mss)
+					return 0;
 
-			memcpy(tcpopt + 2, new_mss, 2);
-			D_LOG("new mss: %u\n", h_new_mss);
+				memcpy(tcpopt + 2, new_mss, 2);
+				D_LOG("new mss: %u\n", h_new_mss);
 
-			uint32_t sum;
-			sum = ~chksum - h_old_mss + h_new_mss;
-			sum = (sum & 0xFFFF) + (sum >> 16);
-			sum = (sum & 0xFFFF) + (sum >> 16);
-			sum = (uint16_t)~sum;
+				uint32_t sum;
+				sum = ~chksum - h_old_mss + h_new_mss;
+				sum = (sum & 0xFFFF) + (sum >> 16);
+				sum = (sum & 0xFFFF) + (sum >> 16);
+				sum = (uint16_t)~sum;
 
-			D_LOG("new chksum: %x\n", sum);
+				D_LOG("new chksum: %x\n", sum);
 
-			uint16_t thsum = htons(sum);
-			memcpy(&tcphdr->th_sum, &thsum, 2);
+				uint16_t thsum = htons(sum);
+				memcpy(&tcphdr->th_sum, &thsum, 2);
 
-			rctr++;
-			return 1;
-		}
-		else if(*tcpopt == TCPOPT_NOP)
-		{
-			D_LOG("offset: %lu, option: NOP\n", tcpopt - tcp);
-			tcpopt += TCPOLEN_NOP;
-		}
-		else
-		{
-			D_LOG("offset: %lu, option: %x, length: %u\n", tcpopt - tcp, *tcpopt, *(tcpopt + 1));
-			tcpopt += *(tcpopt + 1);
+				rctr++;
+				return 1;
+			case TCPOPT_NOP:
+				D_LOG("offset: %lu, option: NOP\n", tcpopt - tcp);
+				tcpopt += TCPOLEN_NOP;
+				break;
+			default:
+				D_LOG("offset: %lu, option: %x, length: %u\n", tcpopt - tcp, *tcpopt, *(tcpopt + 1));
+				tcpopt += *(tcpopt + 1);
 		}
 		D_LOG("next offset: %lu\n", tcpopt - tcp);
 	}
@@ -212,6 +210,11 @@ main(int argc, char *argv[])
 	signal(SIGINT, int_handler);
 
 	nm_desc = nm_open(buf, NULL, 0, NULL);
+	if(nm_desc == NULL)
+	{
+		fprintf(stderr, "Failed to open netmap descriptor. exit.\n");
+		exit(1);
+	}
 
 	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", argv[1], ntohs(new_mss4), ntohs(new_mss6));
 
