@@ -14,12 +14,6 @@
 
 #pragma clang diagnostic ignored "-Wunused-value"
 
-struct nm_desc *nm_desc;
-uint16_t new_mss4;
-uint16_t new_mss6;
-uint64_t pctr = 0;
-uint64_t rctr = 0;
-
 #define DEBUG (0)
 
 #if DEBUG
@@ -28,6 +22,11 @@ uint64_t rctr = 0;
 #define D_LOG	;
 #endif
 
+struct nm_desc *nm_desc;
+uint16_t new_mss4;
+uint16_t new_mss6;
+uint64_t pctr = 0;
+uint64_t rctr = 0;
 
 static int
 rewrite_tcpmss(char *tcp, uint16_t *new_mss)
@@ -42,7 +41,8 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 
 	char *tcpopt;
 	tcpopt = tcp + 20;
-	while(*tcpopt != 0 && tcpopt - tcp < hdrlen ){
+	while(*tcpopt != 0 && tcpopt - tcp < hdrlen )
+	{
 		if(*tcpopt == TCPOPT_MAXSEG)
 		{
 			if(*(tcpopt+1) != 4)
@@ -97,13 +97,16 @@ check_packet(int dir, void *buf, unsigned int len)
 	ether = (struct ether_header *)buf;
 	uint16_t ether_type = ntohs((uint16_t)ether->ether_type);
 
+	D_LOG("ethertype: %x\n", ether_type);
+
 	if (ether_type == ETHERTYPE_IP) {
 		struct ip *ip;
 		ip = (struct ip *)(ether + 1);
 		payload = (char *)ip + ip->ip_hl * 4;
 		if (ip->ip_v == IPVERSION &&
 		 ip->ip_p == IPPROTO_TCP &&
-		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
+		 ((struct tcphdr *)payload)->th_flags & TH_SYN )
+		{
 			D_LOG("v4 tcp syn\n");
 			if(rewrite_tcpmss(payload, &new_mss4))
 			{
@@ -112,13 +115,16 @@ check_packet(int dir, void *buf, unsigned int len)
 				return 1;
 			}
 		}
-	} else if (ether_type == ETHERTYPE_IPV6) {
+	}
+	else if (ether_type == ETHERTYPE_IPV6)
+	{
 		struct ip6_hdr *ip6;
 		ip6 = (struct ip6_hdr *)(ether + 1);
 		payload = (char *)ip6 + 40;
 		if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
 		 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
-		 ((struct tcphdr *)payload)->th_flags & TH_SYN ) {
+		 ((struct tcphdr *)payload)->th_flags & TH_SYN )
+		{
 			D_LOG("v6 tcp syn\n");
 			if(rewrite_tcpmss(payload, &new_mss6))
 			{
@@ -141,12 +147,15 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 
 	if (to_hostring) {
 		first = last = nm_desc->last_tx_ring;
-	} else {
+	}
+	else
+	{
 		first = nm_desc->first_tx_ring;
 		last = nm_desc->last_tx_ring - 1;
 	}
 
-	for (i = first; i <= last; i++) {
+	for (i = first; i <= last; i++)
+	{
 		txring = NETMAP_TXRING(nm_desc->nifp, i);
 		if (nm_ring_empty(txring))
 			continue;
@@ -197,18 +206,21 @@ main(int argc, char *argv[])
 
 	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", NM_IFNAME, ntohs(new_mss4), ntohs(new_mss6));
 
-	for (;;) {
+	for (;;)
+	{
 		pollfd[0].fd = nm_desc->fd;
 		pollfd[0].events = POLLIN;
 		poll(pollfd, 1, 100);
 
-		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++) {
+		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++)
+		{
 			/* last ring is host ring */
 			is_hostring = (i == nm_desc->last_rx_ring);
 
 			rxring = NETMAP_RXRING(nm_desc->nifp, i);
 			cur = rxring->cur;
-			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
+			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur))
+			{
 				pctr++;
 				D_LOG("\n# new packet!\n");
 #if DEBUG
