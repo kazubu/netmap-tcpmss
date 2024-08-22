@@ -1,7 +1,7 @@
 PROG=	netmap_tcpmss
 SRCS=	main.c
 LDADD=	-lutil
-CFLAGS=	-Ofast
+CFLAGS+=	-Ofast
 
 MK_MAN=	no
 

@@ -14,8 +14,6 @@
 
 #pragma clang diagnostic ignored "-Wunused-value"
 
-#define DEBUG (0)
-
 #if DEBUG
 #define D_LOG(...)	printf("%s(%d) %s:", __FILE__, __LINE__, __func__), printf(__VA_ARGS__)
 #else
