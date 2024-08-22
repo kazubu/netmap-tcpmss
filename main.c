@@ -196,15 +196,25 @@ main(int argc, char *argv[])
 	struct netmap_ring *rxring;
 	struct pollfd pollfd[1];
 
+	char buf[128];
+
+	if (argc != 4)
+	{
+		fprintf(stderr, "usage: netmap_tcpmss <ifname> <ipv4_mss> <ipv6_mss>\n");
+
+		exit(1);
+	}
+
+	snprintf(buf, sizeof(buf), "netmap:%s*", argv[1]);
+
+	new_mss4 = htons((uint16_t)atoi(argv[2]));
+	new_mss6 = htons((uint16_t)atoi(argv[3]));
+
 	signal(SIGINT, int_handler);
 
-	new_mss4 = htons((uint16_t)1280);
-	new_mss6 = htons((uint16_t)1240);
+	nm_desc = nm_open(buf, NULL, 0, NULL);
 
-#define NM_IFNAME	"netmap:em2*"
-	nm_desc = nm_open(NM_IFNAME, NULL, 0, NULL);
-
-	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", NM_IFNAME, ntohs(new_mss4), ntohs(new_mss6));
+	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", argv[1], ntohs(new_mss4), ntohs(new_mss6));
 
 	for (;;)
 	{
