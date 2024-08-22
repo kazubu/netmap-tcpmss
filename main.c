@@ -35,7 +35,7 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 	uint16_t hdrlen = (uint16_t)tcphdr->th_off * 4;
 	uint16_t h_new_mss = ntohs(*new_mss);
 	D_LOG("chksum: %x\n", chksum);
-	D_LOG("tcp hdr len: %d\n", hdrlen);
+	D_LOG("tcp hdr len: %u\n", hdrlen);
 
 	char *tcpopt;
 	tcpopt = tcp + 20;
@@ -43,26 +43,27 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 	{
 		if(*tcpopt == TCPOPT_MAXSEG)
 		{
-			D_LOG("offset: %ld, option: MSS\n", tcpopt - tcp);
+			D_LOG("offset: %lu, option: MSS\n", tcpopt - tcp);
 			if(*(tcpopt+1) != 4)
 				return 0;
 
 			uint16_t old_mss;
 			memcpy(&old_mss, (tcpopt + 2), 2);
 			uint16_t h_old_mss = ntohs(old_mss);
-			D_LOG("old mss: %d\n", h_old_mss);
+			D_LOG("old mss: %u\n", h_old_mss);
 
 			if(h_old_mss <= h_new_mss)
 				return 0;
 
 			memcpy(tcpopt + 2, new_mss, 2);
-			D_LOG("new mss: %d\n", ntohs((uint16_t)*(tcpopt + 2)));
+			D_LOG("new mss: %u\n", h_new_mss);
 
 			uint32_t sum;
 			sum = ~chksum - h_old_mss + h_new_mss;
 			sum = (sum & 0xFFFF) + (sum >> 16);
 			sum = (sum & 0xFFFF) + (sum >> 16);
 			sum = (uint16_t)~sum;
+
 			D_LOG("new chksum: %x\n", sum);
 
 			uint16_t thsum = htons(sum);
@@ -73,15 +74,15 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 		}
 		else if(*tcpopt == TCPOPT_NOP)
 		{
-			D_LOG("offset: %ld, option: NOP\n", tcpopt - tcp);
+			D_LOG("offset: %lu, option: NOP\n", tcpopt - tcp);
 			tcpopt += TCPOLEN_NOP;
 		}
 		else
 		{
-			D_LOG("offset: %ld, option: %x, length: %u\n", tcpopt - tcp, *tcpopt, *(tcpopt + 1));
+			D_LOG("offset: %lu, option: %x, length: %u\n", tcpopt - tcp, *tcpopt, *(tcpopt + 1));
 			tcpopt += *(tcpopt + 1);
 		}
-		D_LOG("next offset: %ld\n", tcpopt - tcp);
+		D_LOG("next offset: %lu\n", tcpopt - tcp);
 	}
 	return 0;
 }
