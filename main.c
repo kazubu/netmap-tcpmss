@@ -23,8 +23,10 @@
 struct nm_desc *nm_desc;
 uint16_t new_mss4;
 uint16_t new_mss6;
+#if DEBUG
 uint64_t pctr = 0;
 uint64_t rctr = 0;
+#endif
 
 static int
 rewrite_tcpmss(char *tcp, uint16_t *new_mss)
@@ -37,9 +39,9 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 	D_LOG("chksum: %x\n", chksum);
 	D_LOG("tcp hdr len: %u\n", hdrlen);
 
-	char *tcpopt;
-	tcpopt = tcp + 20;
-	while(*tcpopt != 0 && tcpopt - tcp < hdrlen )
+	char *tcpopt = tcp + sizeof(struct tcphdr);
+	const char *tcpopt_end = tcp + hdrlen;
+	while(tcpopt < tcpopt_end)
 	{
 		switch(*tcpopt)
 		{
@@ -49,33 +51,34 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 					return 0;
 
 				uint16_t old_mss;
-				memcpy(&old_mss, (tcpopt + 2), 2);
+				memcpy(&old_mss, (tcpopt + 2), sizeof(old_mss));
 				uint16_t h_old_mss = ntohs(old_mss);
 				D_LOG("old mss: %u\n", h_old_mss);
 
 				if(h_old_mss <= h_new_mss)
 					return 0;
 
-				memcpy(tcpopt + 2, new_mss, 2);
+				memcpy(tcpopt + 2, new_mss, sizeof(*new_mss));
 				D_LOG("new mss: %u\n", h_new_mss);
 
 				uint32_t sum;
 				sum = ~chksum - h_old_mss + h_new_mss;
 				sum = (sum & 0xFFFF) + (sum >> 16);
 				sum = (sum & 0xFFFF) + (sum >> 16);
-				sum = (uint16_t)~sum;
+				tcphdr->th_sum = htons(~sum);
 
-				D_LOG("new chksum: %x\n", sum);
+				D_LOG("new chksum: %x\n", ntohs(tcphdr->th_sum));
 
-				uint16_t thsum = htons(sum);
-				memcpy(&tcphdr->th_sum, &thsum, 2);
-
+#if DEBUG
 				rctr++;
+#endif
 				return 1;
 			case TCPOPT_NOP:
 				D_LOG("offset: %lu, option: NOP\n", tcpopt - tcp);
 				tcpopt += TCPOLEN_NOP;
 				break;
+			case TCPOPT_EOL:
+				return 0;
 			default:
 				D_LOG("offset: %lu, option: %x, length: %u\n", tcpopt - tcp, *tcpopt, *(tcpopt + 1));
 				tcpopt += *(tcpopt + 1);
@@ -183,7 +186,10 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 void
 int_handler(int sig)
 {
-	printf("%lu packets received. %lu packets rewritten. exit.\n", pctr, rctr);
+#ifdef DEBUG
+	printf("%lu packets received. %lu packets rewritten.", pctr, rctr);
+#endif
+	printf("exit.\n");
 	exit(0);
 }
 
@@ -234,9 +240,9 @@ main(int argc, char *argv[])
 			cur = rxring->cur;
 			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur))
 			{
-				pctr++;
 				D_LOG("\n# new packet!\n");
 #if DEBUG
+				pctr++;
 				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
 #endif
 
