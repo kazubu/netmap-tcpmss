@@ -45,7 +45,7 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 		{
 			case TCPOPT_MAXSEG:
 				D_LOG("offset: %lu, option: MSS\n", tcpopt - tcp);
-				if(*(tcpopt+1) != 4)
+				if(*(tcpopt+1) != TCPOLEN_MAXSEG)
 					return 0;
 
 				uint16_t old_mss;
@@ -104,7 +104,7 @@ check_packet(int dir, void *buf, unsigned int len)
 		 ip->ip_p == IPPROTO_TCP &&
 		 ((struct tcphdr *)payload)->th_flags & TH_SYN )
 		{
-			D_LOG("v4 tcp syn\n");
+			D_LOG("v4 tcp syn(%x)\n", ((struct tcphdr *)payload)->th_flags);
 			if(rewrite_tcpmss(payload, &new_mss4))
 			{
 				D_LOG("mss updated!\n");
@@ -117,7 +117,8 @@ check_packet(int dir, void *buf, unsigned int len)
 	{
 		struct ip6_hdr *ip6;
 		ip6 = (struct ip6_hdr *)(ether + 1);
-		payload = (char *)ip6 + 40;
+		payload = (char *)ip6 + sizeof(struct ip6_hdr);
+		//extension header is not supported
 		if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
 		 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
 		 ((struct tcphdr *)payload)->th_flags & TH_SYN )
