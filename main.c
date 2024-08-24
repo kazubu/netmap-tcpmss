@@ -227,6 +227,13 @@ main(int argc, char *argv[])
 
 	snprintf(buf, sizeof(buf), "netmap:%s*", argv[1]);
 
+	if(atoi(argv[2]) < TCP_MINMSS || atoi(argv[3]) < TCP_MINMSS)
+	{
+		fprintf(stderr, "Specified lower than minimum MSS (%d)\n", TCP_MINMSS);
+
+		exit(1);
+	}
+
 	new_mss4 = htons((uint16_t)atoi(argv[2]));
 	new_mss6 = htons((uint16_t)atoi(argv[3]));
 
