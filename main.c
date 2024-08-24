@@ -110,7 +110,7 @@ check_packet(int dir, void *buf, unsigned int len)
 	{
 		case ETHERTYPE_VLAN:
 			// we don't use src/dst in ether header so just add offset.
-			ether = (void*)ether + ETHER_VLAN_ENCAP_LEN;
+			ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
 			ether_type = ntohs((uint16_t)ether->ether_type);
 		case ETHERTYPE_IP:
 			ip = (struct ip *)(ether + 1);
