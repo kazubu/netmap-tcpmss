@@ -209,6 +209,19 @@ int_handler(int sig)
 	exit(0);
 }
 
+uint16_t
+check_arg_mss(char* arg)
+{
+	char *endptr;
+	long val = strtol(arg, &endptr, 10);
+	if (*endptr != '\0' || val < TCP_MINMSS || val > UINT16_MAX) {
+		fprintf(stderr, "Invalid MSS value: %s\n", arg);
+		exit(EXIT_FAILURE);
+	}
+
+	return (uint16_t)val;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -227,15 +240,8 @@ main(int argc, char *argv[])
 
 	snprintf(buf, sizeof(buf), "netmap:%s*", argv[1]);
 
-	if(atoi(argv[2]) < TCP_MINMSS || atoi(argv[3]) < TCP_MINMSS)
-	{
-		fprintf(stderr, "Specified lower than minimum MSS (%d)\n", TCP_MINMSS);
-
-		exit(EXIT_FAILURE);
-	}
-
-	new_mss4 = htons((uint16_t)atoi(argv[2]));
-	new_mss6 = htons((uint16_t)atoi(argv[3]));
+	new_mss4 = htons(check_arg_mss(argv[2]));
+	new_mss6 = htons(check_arg_mss(argv[3]));
 
 	signal(SIGINT, int_handler);
 	signal(SIGTERM, int_handler);
