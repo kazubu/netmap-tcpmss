@@ -222,7 +222,7 @@ main(int argc, char *argv[])
 	{
 		fprintf(stderr, "usage: netmap_tcpmss <ifname> <ipv4_mss> <ipv6_mss>\n");
 
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	snprintf(buf, sizeof(buf), "netmap:%s*", argv[1]);
@@ -231,7 +231,7 @@ main(int argc, char *argv[])
 	{
 		fprintf(stderr, "Specified lower than minimum MSS (%d)\n", TCP_MINMSS);
 
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	new_mss4 = htons((uint16_t)atoi(argv[2]));
@@ -244,7 +244,8 @@ main(int argc, char *argv[])
 	if(nm_desc == NULL)
 	{
 		fprintf(stderr, "Failed to open netmap descriptor. exit.\n");
-		exit(1);
+
+		exit(EXIT_FAILURE);
 	}
 
 	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", argv[1], ntohs(new_mss4), ntohs(new_mss6));
@@ -256,6 +257,11 @@ main(int argc, char *argv[])
 		if(poll(pollfd, 1, 100) < 0)
 		{
 			fprintf(stderr, "poll returns error");
+
+			if(nm_desc != NULL)
+				nm_close(nm_desc);
+
+			exit(EXIT_FAILURE);
 		}
 
 		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++)
