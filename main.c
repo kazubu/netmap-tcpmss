@@ -93,47 +93,53 @@ check_packet(int dir, void *buf, unsigned int len)
 {
 	char *payload;
 	struct ether_header *ether;
+	struct ip *ip;
+	struct ip6_hdr *ip6;
 
 	ether = (struct ether_header *)buf;
 	uint16_t ether_type = ntohs((uint16_t)ether->ether_type);
 
 	D_LOG("ethertype: %x\n", ether_type);
 
-	if (ether_type == ETHERTYPE_IP) {
-		struct ip *ip;
-		ip = (struct ip *)(ether + 1);
-		payload = (char *)ip + ip->ip_hl * 4;
-		if (ip->ip_v == IPVERSION &&
-		 ip->ip_p == IPPROTO_TCP &&
-		 ((struct tcphdr *)payload)->th_flags & TH_SYN )
-		{
-			D_LOG("v4 tcp syn(%x)\n", ((struct tcphdr *)payload)->th_flags);
-			if(rewrite_tcpmss(payload, &new_mss4))
-			{
-				D_LOG("mss updated!\n");
-
-				return 1;
-			}
-		}
-	}
-	else if (ether_type == ETHERTYPE_IPV6)
+	switch(ether_type)
 	{
-		struct ip6_hdr *ip6;
-		ip6 = (struct ip6_hdr *)(ether + 1);
-		payload = (char *)ip6 + sizeof(struct ip6_hdr);
-		//extension header is not supported
-		if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
-		 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
-		 ((struct tcphdr *)payload)->th_flags & TH_SYN )
-		{
-			D_LOG("v6 tcp syn\n");
-			if(rewrite_tcpmss(payload, &new_mss6))
+		case ETHERTYPE_VLAN:
+			// we don't use src/dst in ether header so just add offset.
+			ether = (void*)ether + ETHER_VLAN_ENCAP_LEN;
+			ether_type = ntohs((uint16_t)ether->ether_type);
+		case ETHERTYPE_IP:
+			ip = (struct ip *)(ether + 1);
+			payload = (char *)ip + ip->ip_hl * 4;
+			if (ip->ip_v == IPVERSION &&
+			 ip->ip_p == IPPROTO_TCP &&
+			 ((struct tcphdr *)payload)->th_flags & TH_SYN )
 			{
-				D_LOG("mss updated!\n");
+				D_LOG("v4 tcp syn(%x)\n", ((struct tcphdr *)payload)->th_flags);
+				if(rewrite_tcpmss(payload, &new_mss4))
+				{
+					D_LOG("mss updated!\n");
 
-				return 1;
+					return 1;
+				}
 			}
-		}
+			break;
+		case ETHERTYPE_IPV6:
+			ip6 = (struct ip6_hdr *)(ether + 1);
+			payload = (char *)ip6 + sizeof(struct ip6_hdr);
+			// extension header is not supported
+			if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
+			 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
+			 ((struct tcphdr *)payload)->th_flags & TH_SYN )
+			{
+				D_LOG("v6 tcp syn\n");
+				if(rewrite_tcpmss(payload, &new_mss6))
+				{
+					D_LOG("mss updated!\n");
+
+					return 1;
+				}
+			}
+			break;
 	}
 
 	return 0;
