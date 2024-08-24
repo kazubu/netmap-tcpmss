@@ -20,7 +20,7 @@
 #define D_LOG	;
 #endif
 
-struct nm_desc *nm_desc;
+struct nm_desc *nm_desc = NULL;
 uint16_t new_mss4;
 uint16_t new_mss6;
 #if DEBUG
@@ -199,8 +199,11 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 void
 int_handler(int sig)
 {
+	if(nm_desc != NULL)
+		nm_close(nm_desc);
+
 #ifdef DEBUG
-	printf("%lu packets received. %lu packets rewritten.", pctr, rctr);
+	printf("%lu packets received. %lu packets rewritten. ", pctr, rctr);
 #endif
 	printf("exit.\n");
 	exit(0);
@@ -228,6 +231,7 @@ main(int argc, char *argv[])
 	new_mss6 = htons((uint16_t)atoi(argv[3]));
 
 	signal(SIGINT, int_handler);
+	signal(SIGTERM, int_handler);
 
 	nm_desc = nm_open(buf, NULL, 0, NULL);
 	if(nm_desc == NULL)
@@ -242,7 +246,10 @@ main(int argc, char *argv[])
 	{
 		pollfd[0].fd = nm_desc->fd;
 		pollfd[0].events = POLLIN;
-		poll(pollfd, 1, 100);
+		if(poll(pollfd, 1, 100) < 0)
+		{
+			fprintf(stderr, "poll returns error");
+		}
 
 		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++)
 		{
