@@ -81,6 +81,11 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 				return 0;
 			default:
 				D_LOG("offset: %lu, option: %x, length: %u\n", tcpopt - tcp, *tcpopt, *(tcpopt + 1));
+				if(*(tcpopt + 1) == 0)
+				{
+					D_LOG("Invalid TCP option length. Skip.\n");
+					return 0;	//invalid TCP option length
+				}
 				tcpopt += *(tcpopt + 1);
 		}
 		D_LOG("next offset: %lu\n", tcpopt - tcp);
@@ -99,7 +104,7 @@ check_packet(int dir, void *buf, unsigned int len)
 	ether = (struct ether_header *)buf;
 	uint16_t ether_type = ntohs((uint16_t)ether->ether_type);
 
-	D_LOG("ethertype: %x\n", ether_type);
+	D_LOG("ethertype: %x, length: %u\n", ether_type, len);
 
 	switch(ether_type)
 	{
@@ -112,7 +117,8 @@ check_packet(int dir, void *buf, unsigned int len)
 			payload = (char *)ip + ip->ip_hl * 4;
 			if (ip->ip_v == IPVERSION &&
 			 ip->ip_p == IPPROTO_TCP &&
-			 ((struct tcphdr *)payload)->th_flags & TH_SYN )
+			 ((struct tcphdr *)payload)->th_flags & TH_SYN &&
+			 len >= (sizeof(struct ether_header) + sizeof(struct ip) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
 			{
 				D_LOG("v4 tcp syn(%x)\n", ((struct tcphdr *)payload)->th_flags);
 				if(rewrite_tcpmss(payload, &new_mss4))
@@ -129,7 +135,8 @@ check_packet(int dir, void *buf, unsigned int len)
 			// extension header is not supported
 			if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
 			 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
-			 ((struct tcphdr *)payload)->th_flags & TH_SYN )
+			 ((struct tcphdr *)payload)->th_flags & TH_SYN &&
+			 len >= (sizeof(struct ether_header) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
 			{
 				D_LOG("v6 tcp syn\n");
 				if(rewrite_tcpmss(payload, &new_mss6))
