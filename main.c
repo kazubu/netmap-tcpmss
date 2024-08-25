@@ -102,17 +102,38 @@ check_packet(int dir, void *buf, unsigned int len)
 	struct ip6_hdr *ip6;
 
 	ether = (struct ether_header *)buf;
-	uint16_t ether_type = ntohs((uint16_t)ether->ether_type);
 
-	D_LOG("ethertype: %x, length: %u\n", ether_type, len);
-
-	switch(ether_type)
+#if !defined NO_VLAN
+	int no_tag = 0;
+	do
 	{
-		case ETHERTYPE_VLAN:
-			// we don't use src/dst in ether header so just add offset.
-			ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
-			ether_type = ntohs((uint16_t)ether->ether_type);
-		case ETHERTYPE_IP:
+		D_LOG("ethertype: %x, length: %u\n", ntohs(ether->ether_type), len);
+		switch(ether->ether_type)
+		{
+			case htons(ETHERTYPE_QINQ):
+				D_LOG("802.1ad tag detected. tag: %u\n", ntohs(((struct ether_vlan_header *)ether)->evl_tag));
+				// we don't use src/dst in ether header so just add offset.
+				ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
+				break;
+			case htons(ETHERTYPE_8021Q9100):
+			case htons(ETHERTYPE_8021Q9200):
+			case htons(ETHERTYPE_8021Q9300):
+				D_LOG("802.1Q stacking tag detected. tag: %u\n", ntohs(((struct ether_vlan_header *)ether)->evl_tag));
+				ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
+				break;
+			case htons(ETHERTYPE_VLAN):
+				D_LOG("802.1Q tag detected. tag: %u\n", ntohs(((struct ether_vlan_header *)ether)->evl_tag));
+				ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
+				break;
+			default:
+				no_tag = 1;
+		}
+	}while(no_tag != 1);
+#endif
+
+	switch(ether->ether_type)
+	{
+		case htons(ETHERTYPE_IP):
 			ip = (struct ip *)(ether + 1);
 			payload = (char *)ip + ip->ip_hl * 4;
 			if (ip->ip_v == IPVERSION &&
@@ -129,7 +150,7 @@ check_packet(int dir, void *buf, unsigned int len)
 				}
 			}
 			break;
-		case ETHERTYPE_IPV6:
+		case htons(ETHERTYPE_IPV6):
 			ip6 = (struct ip6_hdr *)(ether + 1);
 			payload = (char *)ip6 + sizeof(struct ip6_hdr);
 			// extension header is not supported
