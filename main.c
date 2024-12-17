@@ -12,12 +12,10 @@
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 
-#pragma clang diagnostic ignored "-Wunused-value"
-
 #if DEBUG
 #define D_LOG(...)	printf("%s(%d) %s:", __FILE__, __LINE__, __func__), printf(__VA_ARGS__)
 #else
-#define D_LOG	;
+#define D_LOG(...)	;
 #endif
 
 struct nm_desc *nm_desc = NULL;
