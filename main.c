@@ -101,6 +101,10 @@ check_packet(int dir, void *buf, unsigned int len)
 	struct ip *ip;
 	struct ip6_hdr *ip6;
 
+	if(dir == 1) {
+		return 0;
+	}
+
 	ether = (struct ether_header *)buf;
 
 #if !defined NO_VLAN

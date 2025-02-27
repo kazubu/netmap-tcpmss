@@ -27,7 +27,7 @@ test(int l, char* orig, int len, int expected_ret)
 	double time_taken = ((double)end - start) / CLOCKS_PER_SEC;
 
 	printf(" * Last return: %d, Expected return: %d Test: %s, ", ret, expected_ret, (ret == expected_ret)?"Success":"Failed");
-	printf("Time taken: %f seconds. %f pps.\n\n", time_taken, (float)l/time_taken);
+	printf("Time taken: %f seconds. %f Mpps.\n\n", time_taken, (float)l/time_taken/1024/1024);
 }
 
 int
