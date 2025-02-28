@@ -295,6 +295,17 @@ pthread_main(void *arg)
 			}
 			rxring->head = rxring->cur = cur;
 		}
+
+		if (ioctl(work->nm_desc_host->fd, NIOCTXSYNC, NULL) < 0) {
+			perror("NIOCTXSYNC");
+			exit(EXIT_FAILURE);
+		}
+
+
+		if (ioctl(work->nm_desc_nic->fd, NIOCTXSYNC, NULL) < 0) {
+			perror("NIOCTXSYNC");
+			exit(EXIT_FAILURE);
+		}
 	}
 
 	pthread_exit(NULL);
