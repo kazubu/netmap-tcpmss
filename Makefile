@@ -3,7 +3,7 @@ SRCS=	main.c
 LDADD=	-lutil -lpthread
 CFLAGS+=	-Ofast
 .if defined(DEBUG)
-CFLAGS+= -DDEBUG -lutil
+CFLAGS+= -DDEBUG
 .endif
 
 .if defined(NO_VLAN)

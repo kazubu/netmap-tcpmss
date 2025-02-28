@@ -290,7 +290,7 @@ pthread_main(void *arg)
 			rxring = NETMAP_RXRING(work->nm_desc_nic->nifp, i);
 			cur = rxring->cur;
 			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
-//				check_packet(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len);
+				check_packet(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len);
 				swapto(work->nm_desc_host, &rxring->slot[cur]);
 			}
 			rxring->head = rxring->cur = cur;
