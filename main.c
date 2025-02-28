@@ -320,5 +320,10 @@ main(int argc, char *argv[])
 			}
 			rxring->head = rxring->cur = cur;
 		}
+
+		if (ioctl(nm_desc->fd, NIOCTXSYNC, NULL) < 0) {
+			perror("NIOCTXSYNC");
+			exit(EXIT_FAILURE);
+		}
 	}
 }
