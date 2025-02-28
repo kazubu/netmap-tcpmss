@@ -1,6 +1,6 @@
 PROG=	netmap_tcpmss
 SRCS=	main.c
-LDADD=	-lutil
+LDADD=	-lutil -lpthread
 CFLAGS+=	-Ofast
 .if defined(DEBUG)
 CFLAGS+= -DDEBUG -lutil

@@ -1,5 +1,7 @@
 #include <sys/param.h>
 #include <unistd.h>
+#include <err.h>
+#include <pthread.h>
 #include <poll.h>
 #include <signal.h>
 #include <net/ethernet.h>
@@ -20,13 +22,20 @@
 #define D_LOG	;
 #endif
 
-struct nm_desc *nm_desc = NULL;
 uint16_t new_mss4;
 uint16_t new_mss6;
 #if DEBUG
 uint64_t pctr = 0;
 uint64_t rctr = 0;
 #endif
+
+#define MAXTHREAD	8
+struct threadwork {
+	int no;
+	pthread_t thread;
+	struct nm_desc *nm_desc_nic;
+	struct nm_desc *nm_desc_host;
+} threadwork[MAXTHREAD];
 
 static int
 rewrite_tcpmss(char *tcp, uint16_t *new_mss)
@@ -94,16 +103,12 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 }
 
 static int
-check_packet(int dir, void *buf, unsigned int len)
+check_packet(void *buf, unsigned int len)
 {
 	char *payload;
 	struct ether_header *ether;
 	struct ip *ip;
 	struct ip6_hdr *ip6;
-
-	if(dir == 1) {
-		return 0;
-	}
 
 	ether = (struct ether_header *)buf;
 
@@ -178,24 +183,14 @@ check_packet(int dir, void *buf, unsigned int len)
 }
 
 static void
-swapto(int to_hostring, struct netmap_slot *rxslot)
+swapto(struct nm_desc *desc, struct netmap_slot *rxslot)
 {
 	struct netmap_ring *txring;
-	int i, first, last;
+	int i;
 	uint32_t t, cur;
 
-	if (to_hostring) {
-		first = last = nm_desc->last_tx_ring;
-	}
-	else
-	{
-		first = nm_desc->first_tx_ring;
-		last = nm_desc->last_tx_ring - 1;
-	}
-
-	for (i = first; i <= last; i++)
-	{
-		txring = NETMAP_TXRING(nm_desc->nifp, i);
+	for (i = desc->first_tx_ring; i <= desc->last_tx_ring; i++) {
+		txring = NETMAP_TXRING(desc->nifp, i);
 		if (nm_ring_empty(txring))
 			continue;
 
@@ -208,6 +203,8 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 
 		/* set len */
 		txring->slot[cur].len = rxslot->len;
+		if (txring->slot[cur].len < 64)
+			txring->slot[cur].len = 64;
 
 		/* update flags */
 		txring->slot[cur].flags |= NS_BUF_CHANGED;
@@ -224,8 +221,8 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 void
 int_handler(int sig)
 {
-	if(nm_desc != NULL)
-		nm_close(nm_desc);
+	//if(nm_desc != NULL)
+		//nm_close(nm_desc);
 
 #ifdef DEBUG
 	printf("%lu packets received. %lu packets rewritten. ", pctr, rctr);
@@ -247,12 +244,68 @@ check_arg_mss(char* arg)
 	return (uint16_t)val;
 }
 
+void* 
+pthread_main(void *arg)
+{
+	unsigned int cur, n, i, is_hostring;
+	struct threadwork *work;
+	struct pollfd pollfd[2];
+	struct netmap_ring *rxring;
+
+	work = (struct threadwork *)arg;
+
+	printf("thread[%d] nm_desc_nic  = %p\n", work->no, work->nm_desc_nic);
+	printf("thread[%d] nm_desc_host = %p\n", work->no, work->nm_desc_host);
+	fflush(stdout);
+
+	for (;;)
+	{
+		pollfd[0].fd = work->nm_desc_nic->fd;
+		pollfd[0].events = POLLIN;
+
+		if (work->no == 0) {
+			/* only one thread forwards from HOST to NIC */
+			pollfd[1].fd = work->nm_desc_host->fd;
+			pollfd[1].events = POLLIN;
+			poll(pollfd, 2, 100);
+		} else {
+			/* on other threads, no need to forward from HOST to NIC */
+			poll(pollfd, 1, 100);
+		}
+
+		if (work->no == 0) {
+			/* from HOST to NIC */
+			for (i = work->nm_desc_host->first_rx_ring; i <= work->nm_desc_host->last_rx_ring; i++) {
+				rxring = NETMAP_RXRING(work->nm_desc_host->nifp, i);
+				cur = rxring->cur;
+				for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
+					swapto(work->nm_desc_nic, &rxring->slot[cur]);
+				}
+				rxring->head = rxring->cur = cur;
+			}
+		}
+
+		/* from NIC to HOST */
+		for (i = work->nm_desc_nic->first_rx_ring; i <= work->nm_desc_nic->last_rx_ring; i++) {
+			rxring = NETMAP_RXRING(work->nm_desc_nic->nifp, i);
+			cur = rxring->cur;
+			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur)) {
+//				check_packet(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len);
+				swapto(work->nm_desc_host, &rxring->slot[cur]);
+			}
+			rxring->head = rxring->cur = cur;
+		}
+	}
+
+	pthread_exit(NULL);
+}
+
+
 int
 main(int argc, char *argv[])
 {
-	unsigned int cur, n, i, is_hostring;
-	struct netmap_ring *rxring;
-	struct pollfd pollfd[1];
+	unsigned int nic_ring_num, i;
+	struct nm_desc *nm_desc;
 
 	char buf[128];
 
@@ -272,6 +325,8 @@ main(int argc, char *argv[])
 	signal(SIGTERM, int_handler);
 
 	nm_desc = nm_open(buf, NULL, 0, NULL);
+	nic_ring_num = nm_desc->nifp->ni_rx_rings;
+
 	if(nm_desc == NULL)
 	{
 		fprintf(stderr, "Failed to open netmap descriptor. exit.\n");
@@ -279,46 +334,38 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
+	nm_close(nm_desc);
+
+	if (nic_ring_num > MAXTHREAD) {
+		fprintf(stderr, "too many nic rings. increase MAXTHREAD\n");
+		exit(1);
+	}
+
 	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", argv[1], ntohs(new_mss4), ntohs(new_mss6));
 
-	for (;;)
-	{
-		pollfd[0].fd = nm_desc->fd;
-		pollfd[0].events = POLLIN;
-		if(poll(pollfd, 1, 100) < 0)
-		{
-			fprintf(stderr, "poll returns error");
+	printf("%s has %d RX rings\n", argv[1], nic_ring_num);
 
-			if(nm_desc != NULL)
-				nm_close(nm_desc);
+	for (i = 0; i < nic_ring_num; i++) {
+		threadwork[i].no = i;
 
-			exit(EXIT_FAILURE);
-		}
+		snprintf(buf, sizeof(buf), "netmap:%s^", argv[1]);
+		threadwork[i].nm_desc_host = nm_open(buf, NULL, 0, NULL);
+		if (threadwork[i].nm_desc_host == NULL)
+			err(1, "nm_open: %s", buf);
 
-		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++)
-		{
-			/* last ring is host ring */
-			is_hostring = (i == nm_desc->last_rx_ring);
+		snprintf(buf, sizeof(buf), "netmap:%s-%d", argv[1], i);
+		threadwork[i].nm_desc_nic = nm_open(buf, NULL,
+				NM_OPEN_NO_MMAP, threadwork[i].nm_desc_host);
+		if (threadwork[i].nm_desc_nic== NULL)
+			err(1, "nm_open: %s", buf);
 
-			rxring = NETMAP_RXRING(nm_desc->nifp, i);
-			cur = rxring->cur;
-			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur))
-			{
-				D_LOG("\n# new packet!\n");
-#if DEBUG
-				pctr++;
-				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
-#endif
-
-				check_packet(is_hostring, NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len);
-
-#if DEBUG
-				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
-#endif
-
-				swapto(!is_hostring, &rxring->slot[cur]);
-			}
-			rxring->head = rxring->cur = cur;
-		}
+		printf("create thread for %s\n", buf);
+		pthread_create(&threadwork[i].thread, NULL,
+				pthread_main, &threadwork[i]);
 	}
+
+	for (i = 0; i < nic_ring_num; i++)
+		pthread_join(threadwork[i].thread, NULL);
+
+	return 0;
 }
