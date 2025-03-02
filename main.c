@@ -29,6 +29,8 @@ uint64_t pctr = 0;
 uint64_t rctr = 0;
 #endif
 
+pthread_mutex_t tx_sync_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 #define MAXTHREAD	8
 struct threadwork {
 	int no;
@@ -296,10 +298,14 @@ pthread_main(void *arg)
 			rxring->head = rxring->cur = cur;
 		}
 
+		pthread_mutex_lock(&tx_sync_mutex);
+
 		if (ioctl(work->nm_desc_host->fd, NIOCTXSYNC, NULL) < 0) {
 			perror("NIOCTXSYNC");
 			exit(EXIT_FAILURE);
 		}
+
+		pthread_mutex_unlock(&tx_sync_mutex);
 
 
 		if (ioctl(work->nm_desc_nic->fd, NIOCTXSYNC, NULL) < 0) {
