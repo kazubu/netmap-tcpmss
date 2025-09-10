@@ -139,9 +139,9 @@ check_packet(int dir, void *buf, unsigned int len)
 			ip = (struct ip *)(ether + 1);
 			payload = (char *)ip + ip->ip_hl * 4;
 			if (ip->ip_v == IPVERSION &&
-			 ip->ip_p == IPPROTO_TCP &&
-			 ((struct tcphdr *)payload)->th_flags & TH_SYN &&
-			 len >= (sizeof(struct ether_header) + sizeof(struct ip) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
+				ip->ip_p == IPPROTO_TCP &&
+				((struct tcphdr *)payload)->th_flags & TH_SYN &&
+				len >= (sizeof(struct ether_header) + sizeof(struct ip) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
 			{
 				D_LOG("v4 tcp syn(%x)\n", ((struct tcphdr *)payload)->th_flags);
 				if(rewrite_tcpmss(payload, &new_mss4))
@@ -157,9 +157,9 @@ check_packet(int dir, void *buf, unsigned int len)
 			payload = (char *)ip6 + sizeof(struct ip6_hdr);
 			// extension header is not supported
 			if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
-			 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
-			 ((struct tcphdr *)payload)->th_flags & TH_SYN &&
-			 len >= (sizeof(struct ether_header) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
+				ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
+				((struct tcphdr *)payload)->th_flags & TH_SYN &&
+				len >= (sizeof(struct ether_header) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
 			{
 				D_LOG("v6 tcp syn\n");
 				if(rewrite_tcpmss(payload, &new_mss6))
@@ -175,48 +175,61 @@ check_packet(int dir, void *buf, unsigned int len)
 	return 0;
 }
 
-static void
-swapto(int to_hostring, struct netmap_slot *rxslot)
+static u_int
+move_burst(uint32_t rx_ring_idx, uint32_t tx_ring_idx, u_int budget, int rewrite)
 {
-	struct netmap_ring *txring;
-	int i, first, last;
-	uint32_t t, cur;
+	struct netmap_ring *rx = NETMAP_RXRING(nm_desc->nifp, rx_ring_idx);
+	struct netmap_ring *tx = NETMAP_TXRING(nm_desc->nifp, tx_ring_idx);
 
-	if (to_hostring) {
-		first = last = nm_desc->last_tx_ring;
+	u_int rx_avail = nm_ring_space(rx);
+	u_int tx_space = nm_ring_space(tx);
+	u_int n = rx_avail;
+	if (n > tx_space) n = tx_space;
+	if (n > budget)   n = budget;
+	if (n == 0) return 0;
+
+	u_int rx_cur = rx->cur;
+	u_int tx_cur = tx->cur;
+
+	for (u_int k = 0; k < n; k++) {
+		struct netmap_slot *rs = &rx->slot[rx_cur];
+		struct netmap_slot *ts = &tx->slot[tx_cur];
+
+		if (rewrite) {
+			void *buf = NETMAP_BUF(rx, rs->buf_idx);
+			D_LOG("\n# new packet!\n");
+#if DEBUG
+			pctr++;
+			hexdump(buf, rs->len, "  ", 0);
+#endif
+
+			check_packet(0, buf, rs->len);
+
+#if DEBUG
+			hexdump(buf, rs->len, "  ", 0);
+#endif
+
+		}
+
+		uint32_t t = ts->buf_idx;
+		ts->buf_idx = rs->buf_idx;
+		rs->buf_idx = t;
+
+		ts->len = rs->len;
+
+		if(nm_ring_space(tx) < 64)
+			ts->flags |= NS_REPORT;
+
+		ts->flags |= NS_BUF_CHANGED;
+
+		rx_cur = nm_ring_next(rx, rx_cur);
+		tx_cur = nm_ring_next(tx, tx_cur);
 	}
-	else
-	{
-		first = nm_desc->first_tx_ring;
-		last = nm_desc->last_tx_ring - 1;
-	}
 
-	for (i = first; i <= last; i++)
-	{
-		txring = NETMAP_TXRING(nm_desc->nifp, i);
-		if (nm_ring_empty(txring))
-			continue;
+	rx->head = rx->cur = rx_cur;
+	tx->head = tx->cur = tx_cur;
 
-		cur = txring->cur;
-
-		/* swap buf_idx */
-		t = txring->slot[cur].buf_idx;
-		txring->slot[cur].buf_idx = rxslot->buf_idx;
-		rxslot->buf_idx = t;
-
-		/* set len */
-		txring->slot[cur].len = rxslot->len;
-
-		/* update flags */
-		txring->slot[cur].flags |= NS_BUF_CHANGED;
-		rxslot->flags |= NS_BUF_CHANGED;
-
-		/* update ring pointer */
-		cur = nm_ring_next(txring, cur);
-		txring->head = txring->cur = cur;
-
-		break;
-	}
+	return n;
 }
 
 void
@@ -248,8 +261,6 @@ check_arg_mss(char* arg)
 int
 main(int argc, char *argv[])
 {
-	unsigned int cur, n, i, is_hostring;
-	struct netmap_ring *rxring;
 	struct pollfd pollfd[1];
 
 	char buf[128];
@@ -279,11 +290,13 @@ main(int argc, char *argv[])
 
 	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", argv[1], ntohs(new_mss4), ntohs(new_mss6));
 
+	uint32_t is_hostring, i, enqueued, nic_tx_first, nic_tx_last, nic_tx_num, tx_idx, moved;
+	static uint32_t rr;
 	for (;;)
 	{
 		pollfd[0].fd = nm_desc->fd;
-		pollfd[0].events = POLLIN;
-		if(poll(pollfd, 1, 100) < 0)
+		pollfd[0].events = POLLIN | POLLOUT;
+		if(poll(pollfd, 1, 20) < 0)
 		{
 			fprintf(stderr, "poll returns error");
 
@@ -293,35 +306,32 @@ main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++)
-		{
-			/* last ring is host ring */
+		enqueued = 0;
+		rr = 0;
+		nic_tx_first = nm_desc->first_tx_ring;
+		nic_tx_last  = nm_desc->last_tx_ring;
+		nic_tx_num   = (nic_tx_last > nic_tx_first) ? (nic_tx_last - nic_tx_first) : 1;
+
+		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++) {
 			is_hostring = (i == nm_desc->last_rx_ring);
 
-			rxring = NETMAP_RXRING(nm_desc->nifp, i);
-			cur = rxring->cur;
-			for (n = nm_ring_space(rxring); n > 0; n--, cur = nm_ring_next(rxring, cur))
-			{
-				D_LOG("\n# new packet!\n");
-#if DEBUG
-				pctr++;
-				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
-#endif
+			tx_idx = is_hostring
+				? (nic_tx_first + (rr++ % nic_tx_num))
+				: nm_desc->last_tx_ring;
 
-				check_packet(is_hostring, NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len);
-
-#if DEBUG
-				hexdump(NETMAP_BUF(rxring, rxring->slot[cur].buf_idx), rxring->slot[cur].len, "  ", 0);
-#endif
-
-				swapto(!is_hostring, &rxring->slot[cur]);
+			moved = move_burst(i, tx_idx, 512, !is_hostring);
+			if (moved == 0) {
+				(void)ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
+				moved = move_burst(i, tx_idx, 512, !is_hostring);
 			}
-			rxring->head = rxring->cur = cur;
+			enqueued |= (moved > 0);
 		}
 
-		if (ioctl(nm_desc->fd, NIOCTXSYNC, NULL) < 0) {
-			perror("NIOCTXSYNC");
-			exit(EXIT_FAILURE);
+		if (enqueued) {
+			if (ioctl(nm_desc->fd, NIOCTXSYNC, NULL) < 0) {
+				perror("NIOCTXSYNC");
+				exit(EXIT_FAILURE);
+			}
 		}
 	}
 }
