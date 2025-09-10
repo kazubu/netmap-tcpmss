@@ -25,6 +25,9 @@ uint16_t new_mss6;
 uint64_t pctr = 0;
 uint64_t rctr = 0;
 #endif
+static uint64_t dctr = 0;
+
+#define DROP_BUDGET 512
 
 static int
 rewrite_tcpmss(char *tcp, uint16_t *new_mss)
@@ -232,6 +235,23 @@ move_burst(uint32_t rx_ring_idx, uint32_t tx_ring_idx, u_int budget, int rewrite
 	return n;
 }
 
+static inline u_int
+drop_from_rx(uint32_t rx_ring_idx, u_int max_drop)
+{
+	struct netmap_ring *rx = NETMAP_RXRING(nm_desc->nifp, rx_ring_idx);
+	u_int avail = nm_ring_space(rx);
+	u_int n = avail;
+	if (n > max_drop) n = max_drop;
+	if (n == 0) return 0;
+
+	u_int cur = rx->cur;
+	for (u_int k = 0; k < n; k++)
+		cur = nm_ring_next(rx, cur);
+	rx->head = rx->cur = cur;
+	dctr += n;
+	return n;
+}
+
 void
 int_handler(int sig)
 {
@@ -241,6 +261,7 @@ int_handler(int sig)
 #ifdef DEBUG
 	printf("%lu packets received. %lu packets rewritten. ", pctr, rctr);
 #endif
+	printf("drops: %lu\n", dctr);
 	printf("exit.\n");
 	exit(0);
 }
@@ -323,6 +344,9 @@ main(int argc, char *argv[])
 			if (moved == 0) {
 				(void)ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
 				moved = move_burst(i, tx_idx, 512, !is_hostring);
+				if (moved == 0){
+					(void)drop_from_rx(i, DROP_BUDGET);
+				}
 			}
 			enqueued |= (moved > 0);
 		}
