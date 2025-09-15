@@ -1,4 +1,5 @@
 #include <sys/param.h>
+#include <sys/cpuset.h>
 #include <unistd.h>
 #include <poll.h>
 #include <signal.h>
@@ -7,6 +8,10 @@
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <netinet/tcp.h>
+#include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/time.h>
 #include <libutil.h>
 #include <sys/sbuf.h>
 #define NETMAP_WITH_LIBS
@@ -28,6 +33,26 @@ uint64_t rctr = 0;
 static uint64_t dctr = 0;
 
 #define DROP_BUDGET 512
+
+static uint64_t idle_loops = 0;
+static uint64_t progress_watchdog = 0;
+static struct timespec last_progress_ts = {0,0};
+static inline long elapsed_ms_since(struct timespec *ts)
+{
+	struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+	return (long)((now.tv_sec - ts->tv_sec)*1000 + (now.tv_nsec - ts->tv_nsec)/1000000);
+}
+
+static inline u_int
+sum_rx_avail(void)
+{
+	u_int total = 0;
+	for (uint32_t i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++) {
+		struct netmap_ring *rx = NETMAP_RXRING(nm_desc->nifp, i);
+		total += nm_ring_space(rx);
+	}
+	return total;
+}
 
 static int
 rewrite_tcpmss(char *tcp, uint16_t *new_mss)
@@ -322,15 +347,18 @@ main(int argc, char *argv[])
 
 	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", argv[1], ntohs(new_mss4), ntohs(new_mss6));
 
+	clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
+	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+
 	struct pollfd pollfd[1];
-	uint32_t is_hostring, i, enqueued, nic_tx_first, nic_tx_last, nic_tx_num, tx_idx, moved;
+	uint32_t is_hostring, i, enqueued, rx_avail_total, nic_tx_first, nic_tx_last, nic_tx_num, tx_idx, moved;
 	static uint32_t rr;
 	for (;;)
 	{
 		if(dump)
 		{
 			dump = 0;
-			fprintf(stderr, "drops=%ju\n", dctr);
+			fprintf(stderr, "drops=%ju, wd=%ju\n", dctr, progress_watchdog);
 		}
 		pollfd[0].fd = nm_desc->fd;
 		pollfd[0].events = POLLIN | POLLOUT;
@@ -345,11 +373,11 @@ main(int argc, char *argv[])
 		}
 
 		enqueued = 0;
+		rx_avail_total = sum_rx_avail();
 		rr = 0;
 		nic_tx_first = nm_desc->first_tx_ring;
 		nic_tx_last  = nm_desc->last_tx_ring;
 		nic_tx_num   = (nic_tx_last > nic_tx_first) ? (nic_tx_last - nic_tx_first) : 1;
-
 		for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++) {
 			is_hostring = (i == nm_desc->last_rx_ring);
 
@@ -358,6 +386,13 @@ main(int argc, char *argv[])
 				: nm_desc->last_tx_ring;
 
 			moved = move_burst(i, tx_idx, 512, !is_hostring);
+			if (ncpu > 0) {
+				cpuset_t set; CPU_ZERO(&set);
+				CPU_SET((i % ncpu), &set);
+				(void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
+						sizeof(set), &set);
+			}
+			
 			if (moved == 0) {
 				(void)ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
 				moved = move_burst(i, tx_idx, 512, !is_hostring);
@@ -372,6 +407,24 @@ main(int argc, char *argv[])
 			if (ioctl(nm_desc->fd, NIOCTXSYNC, NULL) < 0) {
 				perror("NIOCTXSYNC");
 				exit(EXIT_FAILURE);
+			}
+			idle_loops = 0;
+			clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
+		} else {
+			idle_loops++;
+			if(rx_avail_total == 0) {
+				if(idle_loops & 0x7) {
+					struct timespec ts = {0, 200000};
+					(void)nanosleep(&ts, NULL);
+				}
+				clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
+			} else {
+				if(elapsed_ms_since(&last_progress_ts) > 500) {
+					progress_watchdog++;
+					clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
+				}
+				struct timespec ts = {0, 100000};
+				(void)nanosleep(&ts, NULL);
 			}
 		}
 	}
