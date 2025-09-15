@@ -209,9 +209,15 @@ move_burst(uint32_t rx_ring_idx, uint32_t tx_ring_idx, u_int budget, int rewrite
 	struct netmap_ring *rx = NETMAP_RXRING(nm_desc->nifp, rx_ring_idx);
 	struct netmap_ring *tx = NETMAP_TXRING(nm_desc->nifp, tx_ring_idx);
 
+	u_int tx_slots = tx->num_slots ? tx->num_slots : 1024;
+	u_int tx_low_watermark = tx_slots / 16;
+	if (tx_low_watermark < 32) tx_low_watermark = 32;
+	if (tx_low_watermark > 128) tx_low_watermark = 128;
+
 	u_int rx_avail = nm_ring_space(rx);
 	u_int tx_space = nm_ring_space(tx);
 	u_int n = rx_avail;
+	if (tx_space < tx_low_watermark) return 0;
 	if (n > tx_space) n = tx_space;
 	if (n > budget)   n = budget;
 	if (n == 0) return 0;
@@ -245,7 +251,7 @@ move_burst(uint32_t rx_ring_idx, uint32_t tx_ring_idx, u_int budget, int rewrite
 
 		ts->len = rs->len;
 
-		if(nm_ring_space(tx) < 64)
+		if(nm_ring_space(tx) < tx_low_watermark)
 			ts->flags |= NS_REPORT;
 
 		ts->flags |= NS_BUF_CHANGED;
