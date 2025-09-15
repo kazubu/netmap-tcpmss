@@ -43,6 +43,14 @@ static inline long elapsed_ms_since(struct timespec *ts)
 	return (long)((now.tv_sec - ts->tv_sec)*1000 + (now.tv_nsec - ts->tv_nsec)/1000000);
 }
 
+static uint32_t tx_full_streak = 0;
+static struct timespec last_tx_sync = {0,0};
+#define MIN_SYNC_USEC 200
+static inline long elapsed_us_since(struct timespec *ts) {
+	struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+	return (long)((now.tv_sec - ts->tv_sec)*1000000 + (now.tv_nsec - ts->tv_nsec)/1000);
+}
+
 static inline u_int
 sum_rx_avail(void)
 {
@@ -357,7 +365,7 @@ main(int argc, char *argv[])
 	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
 
 	struct pollfd pollfd[1];
-	uint32_t is_hostring, i, enqueued, rx_avail_total, nic_tx_first, nic_tx_last, nic_tx_num, tx_idx, moved;
+	uint32_t is_hostring, i, enqueued, rx_avail_total, nic_tx_first, nic_tx_last, nic_tx_num, tx_idx, moved, any_blocked;
 	static uint32_t rr;
 	for (;;)
 	{
@@ -380,6 +388,7 @@ main(int argc, char *argv[])
 
 		enqueued = 0;
 		rx_avail_total = sum_rx_avail();
+		any_blocked = 0;
 		rr = 0;
 		nic_tx_first = nm_desc->first_tx_ring;
 		nic_tx_last  = nm_desc->last_tx_ring;
@@ -398,15 +407,33 @@ main(int argc, char *argv[])
 				(void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
 						sizeof(set), &set);
 			}
-			
-			if (moved == 0) {
-				(void)ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
-				moved = move_burst(i, tx_idx, 512, !is_hostring);
-				if (moved == 0){
-					(void)drop_from_rx(i, DROP_BUDGET);
+
+			if (rx_avail_total > 0 && moved == 0) {
+				any_blocked = 1;
+				if (elapsed_us_since(&last_tx_sync) >= MIN_SYNC_USEC)
+				{
+					(void)ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
+					clock_gettime(CLOCK_MONOTONIC, &last_tx_sync);
 				}
+				moved = move_burst(i, tx_idx, 512, !is_hostring);
+				if(moved > 0)
+				{
+					enqueued = 1;
+					tx_full_streak = 0;
+
+					continue;
+				}
+
+				if(!is_hostring) drop_from_rx(i, DROP_BUDGET);
+
+				if(tx_full_streak < 4) tx_full_streak++;
+				struct timespec ts = {0, (long)(100000 * tx_full_streak)};
+				(void)nanosleep(&ts, NULL);
+
+				continue;
 			}
 			enqueued |= (moved > 0);
+			tx_full_streak = 0;
 		}
 
 		if (enqueued) {
@@ -419,13 +446,13 @@ main(int argc, char *argv[])
 		} else {
 			idle_loops++;
 			if(rx_avail_total == 0) {
-				if(idle_loops & 0x7) {
+				if((idle_loops & 0x7) == 0) {
 					struct timespec ts = {0, 200000};
 					(void)nanosleep(&ts, NULL);
 				}
 				clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
 			} else {
-				if(elapsed_ms_since(&last_progress_ts) > 500) {
+				if(any_blocked && elapsed_ms_since(&last_progress_ts) > 500) {
 					progress_watchdog++;
 					clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
 				}
