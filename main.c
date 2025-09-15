@@ -266,6 +266,13 @@ int_handler(int sig)
 	exit(0);
 }
 
+volatile sig_atomic_t dump = 0;
+void
+usr1_handler(int sig)
+{
+	dump = 1;
+}
+
 uint16_t
 check_arg_mss(char* arg)
 {
@@ -282,8 +289,6 @@ check_arg_mss(char* arg)
 int
 main(int argc, char *argv[])
 {
-	struct pollfd pollfd[1];
-
 	char buf[128];
 
 	if (argc != 4)
@@ -293,6 +298,11 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
+	int lock_fd = open("/var/run/netmap_tcpmss.lock", O_CREAT|O_RDWR, 0644);
+	if (lock_fd < 0 || flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+		    fprintf(stderr, "already running\n"); exit(1);
+	}
+
 	snprintf(buf, sizeof(buf), "netmap:%s*", argv[1]);
 
 	new_mss4 = htons(check_arg_mss(argv[2]));
@@ -300,6 +310,7 @@ main(int argc, char *argv[])
 
 	signal(SIGINT, int_handler);
 	signal(SIGTERM, int_handler);
+	signal(SIGUSR1, usr1_handler);
 
 	nm_desc = nm_open(buf, NULL, 0, NULL);
 	if(nm_desc == NULL)
@@ -311,10 +322,16 @@ main(int argc, char *argv[])
 
 	printf("Interface: %s, inet tcp mss: %d, inet6 tcp mss: %d\n", argv[1], ntohs(new_mss4), ntohs(new_mss6));
 
+	struct pollfd pollfd[1];
 	uint32_t is_hostring, i, enqueued, nic_tx_first, nic_tx_last, nic_tx_num, tx_idx, moved;
 	static uint32_t rr;
 	for (;;)
 	{
+		if(dump)
+		{
+			dump = 0;
+			fprintf(stderr, "drops=%ju\n", dctr);
+		}
 		pollfd[0].fd = nm_desc->fd;
 		pollfd[0].events = POLLIN | POLLOUT;
 		if(poll(pollfd, 1, 20) < 0)
