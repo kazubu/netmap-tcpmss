@@ -31,6 +31,7 @@ uint64_t pctr = 0;
 uint64_t rctr = 0;
 #endif
 static uint64_t dctr = 0;
+volatile sig_atomic_t dump = 0;
 
 #define DROP_BUDGET 512
 
@@ -43,9 +44,9 @@ static inline long elapsed_ms_since(struct timespec *ts)
 	return (long)((now.tv_sec - ts->tv_sec)*1000 + (now.tv_nsec - ts->tv_nsec)/1000000);
 }
 
+#define MIN_SYNC_USEC 500
 static uint32_t tx_full_streak = 0;
 static struct timespec last_tx_sync = {0,0};
-#define MIN_SYNC_USEC 200
 static inline long elapsed_us_since(struct timespec *ts) {
 	struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
 	return (long)((now.tv_sec - ts->tv_sec)*1000000 + (now.tv_nsec - ts->tv_nsec)/1000);
@@ -218,9 +219,9 @@ move_burst(uint32_t rx_ring_idx, uint32_t tx_ring_idx, u_int budget, int rewrite
 	struct netmap_ring *tx = NETMAP_TXRING(nm_desc->nifp, tx_ring_idx);
 
 	u_int tx_slots = tx->num_slots ? tx->num_slots : 1024;
-	u_int tx_low_watermark = tx_slots / 16;
-	if (tx_low_watermark < 32) tx_low_watermark = 32;
-	if (tx_low_watermark > 128) tx_low_watermark = 128;
+	u_int tx_low_watermark = tx_slots / 8;
+	if (tx_low_watermark < 32) tx_low_watermark = 64;
+	if (tx_low_watermark > 128) tx_low_watermark = 192;
 
 	u_int rx_avail = nm_ring_space(rx);
 	u_int tx_space = nm_ring_space(tx);
@@ -305,7 +306,6 @@ int_handler(int sig)
 	exit(0);
 }
 
-volatile sig_atomic_t dump = 0;
 void
 usr1_handler(int sig)
 {
@@ -426,7 +426,7 @@ main(int argc, char *argv[])
 
 				if(!is_hostring) drop_from_rx(i, DROP_BUDGET);
 
-				if(tx_full_streak < 4) tx_full_streak++;
+				if(tx_full_streak < 5) tx_full_streak++;
 				struct timespec ts = {0, (long)(100000 * tx_full_streak)};
 				(void)nanosleep(&ts, NULL);
 
