@@ -33,6 +33,7 @@ uint64_t rctr = 0;
 static uint64_t dctr = 0;
 volatile sig_atomic_t dump = 0;
 
+#define MOVE_BUDGET 512
 #define DROP_BUDGET 512
 
 static uint64_t idle_loops = 0;
@@ -44,7 +45,7 @@ static inline long elapsed_ms_since(struct timespec *ts)
 	return (long)((now.tv_sec - ts->tv_sec)*1000 + (now.tv_nsec - ts->tv_nsec)/1000000);
 }
 
-#define MIN_SYNC_USEC 500
+#define MIN_SYNC_USEC 50
 static uint32_t tx_full_streak = 0;
 static struct timespec last_tx_sync = {0,0};
 static inline long elapsed_us_since(struct timespec *ts) {
@@ -219,9 +220,9 @@ move_burst(uint32_t rx_ring_idx, uint32_t tx_ring_idx, u_int budget, int rewrite
 	struct netmap_ring *tx = NETMAP_TXRING(nm_desc->nifp, tx_ring_idx);
 
 	u_int tx_slots = tx->num_slots ? tx->num_slots : 1024;
-	u_int tx_low_watermark = tx_slots / 8;
-	if (tx_low_watermark < 32) tx_low_watermark = 64;
-	if (tx_low_watermark > 128) tx_low_watermark = 192;
+	u_int tx_low_watermark = tx_slots / 32;
+	if (tx_low_watermark < 32) tx_low_watermark = 32;
+	if (tx_low_watermark > 128) tx_low_watermark = 128;
 
 	u_int rx_avail = nm_ring_space(rx);
 	u_int tx_space = nm_ring_space(tx);
@@ -301,7 +302,7 @@ int_handler(int sig)
 #ifdef DEBUG
 	printf("%lu packets received. %lu packets rewritten. ", pctr, rctr);
 #endif
-	printf("drops: %lu\n", dctr);
+	printf("%lu packets dropped. ", dctr);
 	printf("exit.\n");
 	exit(0);
 }
@@ -363,20 +364,30 @@ main(int argc, char *argv[])
 
 	clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
 	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpu > 0) {
+		cpuset_t set; CPU_ZERO(&set);
+		CPU_SET(0, &set);
+		(void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
+				sizeof(set), &set);
+	}
 
 	struct pollfd pollfd[1];
 	uint32_t is_hostring, i, enqueued, rx_avail_total, nic_tx_first, nic_tx_last, nic_tx_num, tx_idx, moved, any_blocked;
 	static uint32_t rr;
+	short want_events = POLLIN;
+	int need_tx_wakeup = 0, timeout_ms;
 	for (;;)
 	{
 		if(dump)
 		{
 			dump = 0;
-			fprintf(stderr, "drops=%ju, wd=%ju\n", dctr, progress_watchdog);
+			fprintf(stderr, "SIGUSR1 received! drops=%ju, wd=%ju\n", dctr, progress_watchdog);
 		}
 		pollfd[0].fd = nm_desc->fd;
-		pollfd[0].events = POLLIN | POLLOUT;
-		if(poll(pollfd, 1, 20) < 0)
+		pollfd[0].events = want_events;
+		timeout_ms = need_tx_wakeup ? 20 : -1;
+		int prc = poll(pollfd, 1, timeout_ms);
+		if(prc < 0)
 		{
 			fprintf(stderr, "poll returns error");
 
@@ -385,9 +396,21 @@ main(int argc, char *argv[])
 
 			exit(EXIT_FAILURE);
 		}
+		if(prc == 0 || (pollfd[0].revents & (POLLIN|POLLOUT)) == 0) continue;
 
 		enqueued = 0;
-		rx_avail_total = sum_rx_avail();
+		rx_avail_total = (pollfd[0].revents & POLLIN) ? sum_rx_avail() : 0;
+		if(rx_avail_total == 0)
+		{
+			idle_loops++;
+			if((idle_loops & 0x7) == 0) {
+				struct timespec ts = {0, 100000};
+				(void)nanosleep(&ts, NULL);
+			}
+			clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
+			continue;
+		}
+
 		any_blocked = 0;
 		rr = 0;
 		nic_tx_first = nm_desc->first_tx_ring;
@@ -400,35 +423,34 @@ main(int argc, char *argv[])
 				? (nic_tx_first + (rr++ % nic_tx_num))
 				: nm_desc->last_tx_ring;
 
-			moved = move_burst(i, tx_idx, 512, !is_hostring);
-			if (ncpu > 0) {
-				cpuset_t set; CPU_ZERO(&set);
-				CPU_SET((i % ncpu), &set);
-				(void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
-						sizeof(set), &set);
-			}
+			moved = move_burst(i, tx_idx, MOVE_BUDGET, !is_hostring);
 
 			if (rx_avail_total > 0 && moved == 0) {
+				// packet is found on rx, but no transmit packets.
 				any_blocked = 1;
 				if (elapsed_us_since(&last_tx_sync) >= MIN_SYNC_USEC)
 				{
 					(void)ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
 					clock_gettime(CLOCK_MONOTONIC, &last_tx_sync);
 				}
-				moved = move_burst(i, tx_idx, 512, !is_hostring);
+				moved = move_burst(i, tx_idx, MOVE_BUDGET, !is_hostring);
 				if(moved > 0)
 				{
 					enqueued = 1;
 					tx_full_streak = 0;
+					need_tx_wakeup = 0;
 
 					continue;
 				}
 
+				// drop rx packets when tx is stucked.
 				if(!is_hostring) drop_from_rx(i, DROP_BUDGET);
 
+				// wait  max 0.5ms
 				if(tx_full_streak < 5) tx_full_streak++;
 				struct timespec ts = {0, (long)(100000 * tx_full_streak)};
 				(void)nanosleep(&ts, NULL);
+				need_tx_wakeup = 1;
 
 				continue;
 			}
@@ -442,23 +464,22 @@ main(int argc, char *argv[])
 				exit(EXIT_FAILURE);
 			}
 			idle_loops = 0;
+			need_tx_wakeup = 0;
 			clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
 		} else {
-			idle_loops++;
-			if(rx_avail_total == 0) {
-				if((idle_loops & 0x7) == 0) {
-					struct timespec ts = {0, 200000};
-					(void)nanosleep(&ts, NULL);
-				}
-				clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
-			} else {
+			// no tx packets on all rings.
+			if(rx_avail_total != 0){
+				// rx is found but no tx.
 				if(any_blocked && elapsed_ms_since(&last_progress_ts) > 500) {
 					progress_watchdog++;
 					clock_gettime(CLOCK_MONOTONIC, &last_progress_ts);
 				}
-				struct timespec ts = {0, 100000};
-				(void)nanosleep(&ts, NULL);
+				//struct timespec ts = {0, 100000};
+				//(void)nanosleep(&ts, NULL);
+				need_tx_wakeup = 1;
 			}
 		}
+
+		want_events = POLLIN | (need_tx_wakeup ? POLLOUT : 0);
 	}
 }
