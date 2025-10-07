@@ -194,7 +194,7 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 	for (i = first; i <= last; i++)
 	{
 		txring = NETMAP_TXRING(nm_desc->nifp, i);
-		if (nm_ring_empty(txring))
+		if (nm_ring_space(txring) == 0)
 			continue;
 
 		cur = txring->cur;
