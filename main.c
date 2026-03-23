@@ -45,6 +45,8 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 		{
 			case TCPOPT_MAXSEG:
 				D_LOG("offset: %lu, option: MSS\n", tcpopt - tcp);
+				if(tcpopt + TCPOLEN_MAXSEG > tcpopt_end)
+					return 0;
 				if(*(tcpopt+1) != TCPOLEN_MAXSEG)
 					return 0;
 
@@ -78,8 +80,10 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 			case TCPOPT_EOL:
 				return 0;
 			default:
+				if(tcpopt + 1 >= tcpopt_end)
+					return 0;
 				D_LOG("offset: %lu, option: %x, length: %u\n", tcpopt - tcp, *tcpopt, *(tcpopt + 1));
-				if(*(tcpopt + 1) == 0)
+				if(*(tcpopt + 1) < 2)
 				{
 					D_LOG("Invalid TCP option length. Skip.\n");
 					return 0;	//invalid TCP option length
@@ -133,15 +137,19 @@ check_packet(int dir, void *buf, unsigned int len)
 	}while(no_tag != 1);
 #endif
 
+	unsigned int hdr_off = (unsigned int)((char *)(ether + 1) - (char *)buf);
 	switch(ether->ether_type)
 	{
 		case htons(ETHERTYPE_IP):
+			if (len < hdr_off + sizeof(struct ip) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG)
+				break;
 			ip = (struct ip *)(ether + 1);
+			if (ip->ip_v != IPVERSION || ip->ip_p != IPPROTO_TCP || ip->ip_hl < 5)
+				break;
+			if (len < hdr_off + (unsigned int)ip->ip_hl * 4 + sizeof(struct tcphdr) + TCPOLEN_MAXSEG)
+				break;
 			payload = (char *)ip + ip->ip_hl * 4;
-			if (ip->ip_v == IPVERSION &&
-			 ip->ip_p == IPPROTO_TCP &&
-			 ((struct tcphdr *)payload)->th_flags & TH_SYN &&
-			 len >= (sizeof(struct ether_header) + sizeof(struct ip) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
+			if (((struct tcphdr *)payload)->th_flags & TH_SYN)
 			{
 				D_LOG("v4 tcp syn(%x)\n", ((struct tcphdr *)payload)->th_flags);
 				if(rewrite_tcpmss(payload, &new_mss4))
@@ -153,13 +161,15 @@ check_packet(int dir, void *buf, unsigned int len)
 			}
 			break;
 		case htons(ETHERTYPE_IPV6):
+			if (len < hdr_off + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG)
+				break;
 			ip6 = (struct ip6_hdr *)(ether + 1);
-			payload = (char *)ip6 + sizeof(struct ip6_hdr);
 			// extension header is not supported
-			if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) == IPV6_VERSION &&
-			 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_TCP &&
-			 ((struct tcphdr *)payload)->th_flags & TH_SYN &&
-			 len >= (sizeof(struct ether_header) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + TCPOLEN_MAXSEG))
+			if ((ip6->ip6_ctlun.ip6_un2_vfc & IPV6_VERSION_MASK) != IPV6_VERSION ||
+			 ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
+				break;
+			payload = (char *)ip6 + sizeof(struct ip6_hdr);
+			if (((struct tcphdr *)payload)->th_flags & TH_SYN)
 			{
 				D_LOG("v6 tcp syn\n");
 				if(rewrite_tcpmss(payload, &new_mss6))
