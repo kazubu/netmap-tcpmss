@@ -19,6 +19,7 @@
 #endif
 
 struct nm_desc *nm_desc = NULL;
+volatile sig_atomic_t should_exit = 0;
 uint16_t new_mss4;
 uint16_t new_mss6;
 #if DEBUG
@@ -88,6 +89,11 @@ rewrite_tcpmss(char *tcp, uint16_t *new_mss)
 					D_LOG("Invalid TCP option length. Skip.\n");
 					return 0;	//invalid TCP option length
 				}
+			if(tcpopt + *(tcpopt + 1) > tcpopt_end)
+			{
+				D_LOG("TCP option extends beyond header. Skip.\n");
+				return 0;	//option extends beyond TCP header
+			}
 				tcpopt += *(tcpopt + 1);
 		}
 		D_LOG("next offset: %lu\n", tcpopt - tcp);
@@ -110,6 +116,7 @@ check_packet(int dir, void *buf, unsigned int len)
 	ether = (struct ether_header *)buf;
 
 #if !defined NO_VLAN
+	int vlan_count = 0;
 	int no_tag = 0;
 	do
 	{
@@ -118,6 +125,10 @@ check_packet(int dir, void *buf, unsigned int len)
 		{
 			case htons(ETHERTYPE_QINQ):
 				D_LOG("802.1ad tag detected. tag: %u\n", ntohs(((struct ether_vlan_header *)ether)->evl_tag));
+				if (++vlan_count > 4 || (char *)ether + ETHER_VLAN_ENCAP_LEN + sizeof(struct ether_header) > (char *)buf + len) {
+					D_LOG("Too many VLAN tags or packet too short. Skip.\n");
+					return 0;
+				}
 				// we don't use src/dst in ether header so just add offset.
 				ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
 				break;
@@ -125,10 +136,18 @@ check_packet(int dir, void *buf, unsigned int len)
 			case htons(ETHERTYPE_8021Q9200):
 			case htons(ETHERTYPE_8021Q9300):
 				D_LOG("802.1Q stacking tag detected. tag: %u\n", ntohs(((struct ether_vlan_header *)ether)->evl_tag));
+				if (++vlan_count > 4 || (char *)ether + ETHER_VLAN_ENCAP_LEN + sizeof(struct ether_header) > (char *)buf + len) {
+					D_LOG("Too many VLAN tags or packet too short. Skip.\n");
+					return 0;
+				}
 				ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
 				break;
 			case htons(ETHERTYPE_VLAN):
 				D_LOG("802.1Q tag detected. tag: %u\n", ntohs(((struct ether_vlan_header *)ether)->evl_tag));
+				if (++vlan_count > 4 || (char *)ether + ETHER_VLAN_ENCAP_LEN + sizeof(struct ether_header) > (char *)buf + len) {
+					D_LOG("Too many VLAN tags or packet too short. Skip.\n");
+					return 0;
+				}
 				ether = (struct ether_header *)((char *)ether + ETHER_VLAN_ENCAP_LEN);
 				break;
 			default:
@@ -232,6 +251,13 @@ swapto(int to_hostring, struct netmap_slot *rxslot)
 void
 int_handler(int sig)
 {
+	(void)sig;
+	should_exit = 1;
+}
+
+void
+cleanup_and_exit(void)
+{
 	if(nm_desc != NULL)
 		nm_close(nm_desc);
 
@@ -240,8 +266,8 @@ int_handler(int sig)
 #endif
 	printf("exit.\n");
 	exit(0);
-}
 
+}
 uint16_t
 check_arg_mss(char* arg)
 {
@@ -291,11 +317,15 @@ main(int argc, char *argv[])
 
 	for (;;)
 	{
+		if (should_exit)
+			cleanup_and_exit();
+
 		pollfd[0].fd = nm_desc->fd;
+
 		pollfd[0].events = POLLIN;
 		if(poll(pollfd, 1, 100) < 0)
 		{
-			fprintf(stderr, "poll returns error");
+			perror("poll");
 
 			if(nm_desc != NULL)
 				nm_close(nm_desc);
